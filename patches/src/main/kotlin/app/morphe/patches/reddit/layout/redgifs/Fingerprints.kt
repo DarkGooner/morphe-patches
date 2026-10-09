@@ -106,9 +106,11 @@ internal object VideoElementConstructorFingerprint : Fingerprint(
         "L"
     ),
     filters = listOf(
+        // The type is switched on with Enum.ordinal(), not VideoElement$Type.ordinal().
         methodCall(
-            definingClass = "Lcom/reddit/feeds/model/VideoElement\$Type;",
-            name = "ordinal"
+            definingClass = "Ljava/lang/Enum;",
+            name = "ordinal",
+            returnType = "I"
         )
     )
 )
