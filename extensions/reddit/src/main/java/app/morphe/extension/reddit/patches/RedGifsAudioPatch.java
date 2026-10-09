@@ -468,10 +468,13 @@ public class RedGifsAudioPatch {
             return null;
         }
 
+        // Prefer sd. The hd file is often 1080p at 3-5 Mbps, in a single non-adaptive file,
+        // sometimes with the index at the end. That causes playback to pause and resume while
+        // buffering. The sd file is about 5x smaller, has the same audio and has the index first.
         JSONObject urls = gif.getJSONObject("urls");
-        String url = urls.optString("hd");
+        String url = urls.optString("sd");
         if (url.isEmpty()) {
-            url = urls.optString("sd");
+            url = urls.optString("hd");
         }
         return url.isEmpty() ? null : url;
     }
