@@ -48,6 +48,8 @@ Second \"item\" text"</string>
     <string name="morphe_disable_modern_home_title">Disable modern home UI</string>
     <string name="morphe_disable_screenshot_popup_title">Disable screenshot popup</string>
     <string name="morphe_disable_screenshot_popup_summary">Disables the popup that appears when taking a screenshot</string>
+    <string name="morphe_redgifs_audio_title">Enable RedGifs audio</string>
+    <string name="morphe_redgifs_audio_summary">Plays the original RedGifs video with sound instead of Reddit's silent copy</string>
     <string name="morphe_force_system_font_title">Force system font</string>
     <string name="morphe_force_system_font_summary">Use the device system font instead of Reddit Sans or Roboto. Enabling this also turns off Custom font</string>
     <string name="morphe_hide_ask_button_title">Hide Ask button</string>
