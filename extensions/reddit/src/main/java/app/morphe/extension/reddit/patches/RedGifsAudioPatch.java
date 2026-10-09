@@ -9,11 +9,20 @@ package app.morphe.extension.reddit.patches;
 
 import androidx.annotation.Nullable;
 
+import com.reddit.domain.image.model.ImageResolution;
+import com.reddit.domain.model.Image;
+import com.reddit.domain.model.Link;
+import com.reddit.domain.model.Preview;
+import com.reddit.domain.model.RedditVideo;
+import com.reddit.domain.model.Variant;
+import com.reddit.domain.model.Variants;
+
 import org.json.JSONObject;
 
 import java.net.HttpURLConnection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,8 +49,9 @@ import app.morphe.extension.shared.requests.Requester;
  * the fetch starts as soon as a post is loaded, and the video url lookup waits for it
  * when called off the main thread.
  * <p>
- * The GraphQL feed creates video elements without the post url, so the RedGifs post
- * is found using the link id recorded when the post was loaded.
+ * Some video players are created only from Reddit's preview video url, without the post,
+ * so the Reddit preview videos of each RedGifs post are recorded when the post is loaded,
+ * and the url is replaced where every video player url is created.
  * <p>
  * The Reddit mute button is not changed, so the user can still mute.
  *
@@ -120,9 +130,17 @@ public class RedGifsAudioPatch {
     private static final Map<String, CachedUrl> cache = createLruMap();
 
     /**
-     * Reddit link id (t3_...) to RedGifs id.
+     * Key of a Reddit preview video url (see {@link #getMediaKey(String)}) to RedGifs id.
      */
-    private static final Map<String, String> linkIdToRedGifsId = createLruMap();
+    private static final Map<String, String> mediaKeyToRedGifsId = createLruMap();
+
+    /**
+     * Matches the host and path of an url, without the query.
+     */
+    private static final Pattern URL_HOST_PATH_PATTERN = Pattern.compile(
+            "^https?://([a-z0-9.-]+)/([^?#]*)",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private static final Map<String, FutureTask<String>> pendingFetches = new ConcurrentHashMap<>();
 
@@ -145,13 +163,17 @@ public class RedGifsAudioPatch {
 
     /**
      * Injection point. Called when a post is created.
-     *
-     * @param linkId  Link id of the post (t3_...).
-     * @param postUrl Url of the post.
+     * Records which Reddit preview videos belong to a RedGifs post, and starts fetching the
+     * RedGifs video url.
      */
-    public static void prefetch(@Nullable String linkId, @Nullable String postUrl) {
+    public static void prefetch(@Nullable Link link) {
         try {
-            if (postUrl == null || !Settings.REDGIFS_AUDIO.get()) {
+            if (link == null || !Settings.REDGIFS_AUDIO.get()) {
+                return;
+            }
+
+            String postUrl = link.getUrl();
+            if (postUrl == null) {
                 return;
             }
 
@@ -160,8 +182,36 @@ public class RedGifsAudioPatch {
                 return;
             }
 
-            if (linkId != null && linkIdToRedGifsId.put(linkId, id) == null) {
-                diagnostic(() -> "prefetch linkId=" + linkId + " id=" + id + " thread=" + threadName());
+            Preview preview = link.getPreview();
+            if (preview != null) {
+                RedditVideo video = preview.getRedditVideoPreview();
+                if (video != null) {
+                    mapMediaUrl(video.getDashUrl(), id);
+                    mapMediaUrl(video.getHlsUrl(), id);
+                    mapMediaUrl(video.getFallBackUrl(), id);
+                }
+
+                List<Image> images = preview.getImages();
+                if (images != null) {
+                    for (Image image : images) {
+                        Variants variants = image.getVariants();
+                        Variant mp4 = variants == null ? null : variants.getMp4();
+                        if (mp4 == null) {
+                            continue;
+                        }
+
+                        ImageResolution source = mp4.getSource();
+                        if (source != null) {
+                            mapMediaUrl(source.getUrl(), id);
+                        }
+                        List<ImageResolution> resolutions = mp4.getResolutions();
+                        if (resolutions != null) {
+                            for (ImageResolution resolution : resolutions) {
+                                mapMediaUrl(resolution.getUrl(), id);
+                            }
+                        }
+                    }
+                }
             }
 
             if (getCachedUrl(id) == null) {
@@ -172,37 +222,74 @@ public class RedGifsAudioPatch {
         }
     }
 
+    private static void mapMediaUrl(@Nullable String url, String id) {
+        String key = getMediaKey(url);
+        if (key != null && mediaKeyToRedGifsId.put(key, id) == null) {
+            diagnostic(() -> "map key=" + key + " id=" + id + " thread=" + threadName());
+        }
+    }
+
     /**
-     * Injection point. Called at the start of creating a feed video element.
+     * Reddit video urls of the same video differ in format and query parameters
+     * (DASH, HLS, fallback mp4, packaged mp4), but share the v.redd.it video id.
      *
-     * @param linkId     Link id of the post (t3_...).
-     * @param uniqueId   Unused.
-     * @param promoted   Unused.
-     * @param identifier Unused.
-     * @param type       Unused.
-     * @param preview    Unused.
-     * @param videoUrl   Reddit's audio-less video url.
-     * @return RedGifs video url with audio, or null to use the original url and video type.
+     * @return Key identifying the Reddit hosted video of an url, or null if it's not hosted by Reddit.
      */
     @Nullable
-    public static String getVideoElementUrl(@Nullable String linkId, @Nullable String uniqueId,
-                                            boolean promoted, @Nullable Object identifier,
-                                            @Nullable Object type, @Nullable Object preview,
-                                            @Nullable String videoUrl) {
-        try {
-            if (linkId == null || !Settings.REDGIFS_AUDIO.get()) {
-                return null;
-            }
-
-            String id = linkIdToRedGifsId.get(linkId);
-            if (id == null) {
-                return null;
-            }
-
-            return resolveVideoUrl(id, "VideoElement type=" + type);
-        } catch (Exception ex) {
-            Logger.printException(() -> "getVideoElementUrl failure", ex);
+    private static String getMediaKey(@Nullable String url) {
+        if (url == null) {
             return null;
+        }
+
+        Matcher matcher = URL_HOST_PATH_PATTERN.matcher(url);
+        if (!matcher.find()) {
+            return null;
+        }
+
+        //noinspection DataFlowIssue
+        String host = matcher.group(1).toLowerCase(Locale.US);
+        String path = matcher.group(2);
+        if (!host.endsWith("redd.it")) {
+            return null;
+        }
+
+        if (host.equals("v.redd.it") || host.equals("packaged-media.redd.it")) {
+            //noinspection DataFlowIssue
+            int slash = path.indexOf('/');
+            return "v.redd.it/" + (slash < 0 ? path : path.substring(0, slash));
+        }
+
+        return host + "/" + path;
+    }
+
+    /**
+     * Injection point. Called when any video url is given to the video player.
+     *
+     * @param url Video url.
+     * @return RedGifs video url with audio, or the original url.
+     */
+    public static String getPlaybackUrl(String url) {
+        try {
+            if (url == null || !Settings.REDGIFS_AUDIO.get()) {
+                return url;
+            }
+
+            String key = getMediaKey(url);
+            if (key == null) {
+                return url;
+            }
+
+            String id = mediaKeyToRedGifsId.get(key);
+            if (id == null) {
+                diagnostic(() -> "playback unmapped key=" + key + " thread=" + threadName());
+                return url;
+            }
+
+            String redGifsUrl = resolveVideoUrl(id, "VideoUrls key=" + key);
+            return redGifsUrl != null ? redGifsUrl : url;
+        } catch (Exception ex) {
+            Logger.printException(() -> "getPlaybackUrl failure", ex);
+            return url;
         }
     }
 

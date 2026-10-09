@@ -67,52 +67,24 @@ internal object LinkMediaVideoUrlFingerprint : Fingerprint(
 )
 
 /**
- * Main constructor of the feed VideoElement. Every feed video, from both the
- * Link based and the GraphQL cell based feed mappers, is created through it.
+ * VideoUrls(defaultUrl) holds the url given to every Reddit video player.
  *
- * Parameters start with: linkId, uniqueId, promoted, identifier, type, preview, videoUrl.
- *
- * 2026.22.0: ioj0.<init>
- * 2026.24.0: c7l0.<init>
+ * 2026.24.0: ibl0
  */
-internal object VideoElementConstructorFingerprint : Fingerprint(
+internal object VideoUrlsToStringFingerprint : Fingerprint(
+    name = "toString",
+    returnType = "Ljava/lang/String;",
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
+    parameters = listOf(),
+    strings = listOf("VideoUrls(defaultUrl=")
+)
+
+internal object VideoUrlsConstructorFingerprint : Fingerprint(
+    classFingerprint = VideoUrlsToStringFingerprint,
     name = "<init>",
     returnType = "V",
     accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR),
-    parameters = listOf(
-        "Ljava/lang/String;",
-        "Ljava/lang/String;",
-        "Z",
-        "L",
-        "Lcom/reddit/feeds/model/VideoElement\$Type;",
-        "L",
-        "Ljava/lang/String;",
-        "I",
-        "I",
-        "Ljava/lang/String;",
-        "Z",
-        "Z",
-        "Ljava/lang/String;",
-        "Ljava/lang/String;",
-        "Ljava/lang/String;",
-        "Ljava/lang/String;",
-        "Ljava/lang/String;",
-        "L",
-        "L",
-        "Z",
-        "Z",
-        "Z",
-        "Lcom/reddit/feeds/caching/data/DataSourceType;",
-        "L"
-    ),
-    filters = listOf(
-        // The type is switched on with Enum.ordinal(), not VideoElement$Type.ordinal().
-        methodCall(
-            definingClass = "Ljava/lang/Enum;",
-            name = "ordinal",
-            returnType = "I"
-        )
-    )
+    parameters = listOf("Ljava/lang/String;")
 )
 
 /**

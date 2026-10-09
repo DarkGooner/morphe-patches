@@ -36,33 +36,22 @@ val redGifsAudioPatch = bytecodePatch(
                 it.opcode == Opcode.RETURN_VOID
             }
 
-            // All registers are unused at the final return, so v0 and v1 can be overwritten.
+            // All registers are unused at the final return, so v0 can be overwritten.
             addInstructions(
                 returnIndex,
                 """
                     move-object/from16 v0, p0
-                    invoke-virtual { v0 }, Lcom/reddit/domain/model/Link;->getKindWithId()Ljava/lang/String;
-                    move-result-object v1
-                    iget-object v0, v0, Lcom/reddit/domain/model/Link;->url:Ljava/lang/String;
-                    invoke-static { v1, v0 }, $EXTENSION_CLASS->prefetch(Ljava/lang/String;Ljava/lang/String;)V
+                    invoke-static { v0 }, $EXTENSION_CLASS->prefetch(Lcom/reddit/domain/model/Link;)V
                 """
             )
         }
 
-        // Feed videos. The GraphQL feed has no post url, so the RedGifs post is found by its link id.
-        // Before the super constructor call only v0 is free, so the first seven parameters
-        // (linkId .. videoUrl) are passed as a register range.
-        VideoElementConstructorFingerprint.method.addInstructionsWithLabels(
+        // Every video player url, including feed videos that are created without the post.
+        VideoUrlsConstructorFingerprint.method.addInstructions(
             0,
             """
-                invoke-static/range { p1 .. p7 }, $EXTENSION_CLASS->getVideoElementUrl(Ljava/lang/String;Ljava/lang/String;ZLjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;
-                move-result-object v0
-                if-eqz v0, :original
-                move-object/from16 p7, v0
-                sget-object v0, Lcom/reddit/feeds/model/VideoElement${'$'}Type;->MP4:Lcom/reddit/feeds/model/VideoElement${'$'}Type;
-                move-object/from16 p5, v0
-                :original
-                nop
+                invoke-static { p1 }, $EXTENSION_CLASS->getPlaybackUrl(Ljava/lang/String;)Ljava/lang/String;
+                move-result-object p1
             """
         )
 
