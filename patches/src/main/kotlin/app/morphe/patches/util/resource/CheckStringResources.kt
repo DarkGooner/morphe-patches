@@ -40,10 +40,7 @@ internal fun main(args: Array<String>) {
     val exceptions = mutableListOf<Exception>()
 
     arrayOf(
-        "music",
         "shared",
-        "shared-youtube",
-        "youtube",
         "reddit"
     ).forEach { appId ->
         localesAll.forEach { locale ->

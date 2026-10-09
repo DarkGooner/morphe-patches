@@ -17,8 +17,6 @@ patches {
 // Separate configuration so gson is available at runtime for the
 // generatePatchesList task but never bundled into the APK.
 val patchListGeneratorClasspath = configurations.create("patchListGeneratorClasspath")
-val jamApk = providers.gradleProperty("jamApk")
-val jamOutput = providers.gradleProperty("jamOutput")
 
 dependencies {
     // Required due to smali, or build fails. Can be removed once smali is bumped.
@@ -39,7 +37,6 @@ dependencies {
 tasks {
     test {
         useJUnitPlatform()
-        jamApk.orNull?.let { systemProperty("jamApk", it) }
     }
 
     register<JavaExec>("checkStringResources") {
@@ -60,20 +57,6 @@ tasks {
         mainClass.set("app.morphe.util.PatchListGeneratorKt")
     }
 
-    register<JavaExec>("validateJam") {
-        description = "Patches a supplied YouTube Music APK for Jam validation and optional device testing"
-        group = "verification"
-
-        dependsOn("testClasses")
-        classpath = sourceSets["test"].runtimeClasspath
-        mainClass.set("app.morphe.patches.music.interaction.jam.JamDeviceBuildKt")
-
-        doFirst {
-            val apk = jamApk.orNull
-                ?: throw GradleException("validateJam requires -PjamApk=/absolute/path/to/ytm.apk")
-            setArgs(listOfNotNull(apk, jamOutput.orNull))
-        }
-    }
     // Used by gradle-semantic-release-plugin.
     publish {
         dependsOn("generatePatchesList")
