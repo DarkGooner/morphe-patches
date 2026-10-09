@@ -92,7 +92,7 @@ public class RedGifsAudioPatch {
     private static final long VIDEO_URL_CACHE_MILLISECONDS = 30 * 60 * 1000;
 
     /**
-     * How long to wait before retrying a video that failed or has no audio.
+     * How long to wait before retrying a video that could not be fetched.
      */
     private static final long NO_URL_CACHE_MILLISECONDS = 5 * 60 * 1000;
 
@@ -102,7 +102,7 @@ public class RedGifsAudioPatch {
 
     private static final class CachedUrl {
         /**
-         * Null if the video has no audio or could not be fetched.
+         * Null if the video could not be fetched.
          */
         @Nullable
         final String url;
@@ -131,6 +131,17 @@ public class RedGifsAudioPatch {
      * RedGifs id to video url.
      */
     private static final Map<String, CachedUrl> cache = createLruMap();
+
+    /**
+     * Prefix of the placeholder v.redd.it video id of posts without a Reddit hosted video.
+     */
+    private static final String SYNTHETIC_VIDEO_ID_PREFIX = "morpheredgifs";
+
+    /**
+     * How long the main thread waits for the RedGifs video of a placeholder url.
+     * A placeholder url cannot be played, so it's better to wait than to fail.
+     */
+    private static final long SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS = 2000;
 
     /**
      * Key of a Reddit preview video url (see {@link #getMediaKey(String)}) to RedGifs id.
@@ -165,68 +176,143 @@ public class RedGifsAudioPatch {
     }
 
     /**
-     * Injection point. Called when a post is created.
+     * Injection point. Called at the end of creating a post.
+     * <p>
      * Records which Reddit preview videos belong to a RedGifs post, and starts fetching the
      * RedGifs video url.
+     * <p>
+     * Older RedGifs posts are embeds without a Reddit hosted preview video. Reddit shows these
+     * as links that open in the browser. For these, a preview video is created with placeholder
+     * urls that are replaced with the RedGifs video when played, so the post plays in the app.
+     *
+     * @return Preview with a video to set on the post, or null to keep the original preview.
      */
-    public static void prefetch(@Nullable Link link) {
+    @Nullable
+    public static Preview onLinkCreated(@Nullable Link link) {
         try {
             if (link == null || !Settings.REDGIFS_AUDIO.get()) {
-                return;
+                return null;
             }
 
             String postUrl = link.getUrl();
             if (postUrl == null) {
-                return;
+                return null;
             }
 
             String id = getRedGifsId(postUrl);
             if (id == null) {
-                return;
+                return null;
             }
 
-            boolean hasRedditVideo = false;
             Preview preview = link.getPreview();
-            if (preview != null) {
-                RedditVideo video = preview.getRedditVideoPreview();
-                if (video != null) {
-                    hasRedditVideo |= mapMediaUrl(video.getDashUrl(), id);
-                    hasRedditVideo |= mapMediaUrl(video.getHlsUrl(), id);
-                    hasRedditVideo |= mapMediaUrl(video.getFallBackUrl(), id);
+            boolean hasRedditVideo = mapPreviewVideos(preview, id);
+
+            Preview syntheticPreview = null;
+            if (!hasRedditVideo && preview != null) {
+                syntheticPreview = createPreviewWithVideo(preview, id);
+                if (syntheticPreview != null && postsWithoutRedditVideoLogged.add(id)) {
+                    diagnostic(() -> "syntheticVideo id=" + id + " " + describePost(link));
                 }
-
-                List<Image> images = preview.getImages();
-                if (images != null) {
-                    for (Image image : images) {
-                        Variants variants = image.getVariants();
-                        Variant mp4 = variants == null ? null : variants.getMp4();
-                        if (mp4 == null) {
-                            continue;
-                        }
-
-                        ImageResolution source = mp4.getSource();
-                        if (source != null) {
-                            hasRedditVideo |= mapMediaUrl(source.getUrl(), id);
-                        }
-                        List<ImageResolution> resolutions = mp4.getResolutions();
-                        if (resolutions != null) {
-                            for (ImageResolution resolution : resolutions) {
-                                hasRedditVideo |= mapMediaUrl(resolution.getUrl(), id);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!hasRedditVideo && postsWithoutRedditVideoLogged.add(id)) {
-                diagnostic(() -> "noRedditVideo id=" + id + " " + describePost(link));
             }
 
             if (getCachedUrl(id) == null) {
                 startFetch(id);
             }
-        } catch (Exception ex) {
-            Logger.printException(() -> "prefetch failure", ex);
+
+            return syntheticPreview;
+        } catch (Throwable ex) {
+            Logger.printException(() -> "onLinkCreated failure", ex);
+            return null;
+        }
+    }
+
+    /**
+     * Records the Reddit preview videos of a post.
+     *
+     * @return If the post has a Reddit hosted preview video.
+     */
+    private static boolean mapPreviewVideos(@Nullable Preview preview, String id) {
+        boolean hasRedditVideo = false;
+        if (preview != null) {
+            RedditVideo video = preview.getRedditVideoPreview();
+            if (video != null) {
+                hasRedditVideo |= mapMediaUrl(video.getDashUrl(), id);
+                hasRedditVideo |= mapMediaUrl(video.getHlsUrl(), id);
+                hasRedditVideo |= mapMediaUrl(video.getFallBackUrl(), id);
+            }
+
+            List<Image> images = preview.getImages();
+            if (images != null) {
+                for (Image image : images) {
+                    Variants variants = image.getVariants();
+                    Variant mp4 = variants == null ? null : variants.getMp4();
+                    if (mp4 == null) {
+                        continue;
+                    }
+
+                    ImageResolution source = mp4.getSource();
+                    if (source != null) {
+                        hasRedditVideo |= mapMediaUrl(source.getUrl(), id);
+                    }
+                    List<ImageResolution> resolutions = mp4.getResolutions();
+                    if (resolutions != null) {
+                        for (ImageResolution resolution : resolutions) {
+                            hasRedditVideo |= mapMediaUrl(resolution.getUrl(), id);
+                        }
+                    }
+                }
+            }
+        }
+        return hasRedditVideo;
+    }
+
+    private static boolean syntheticVideoUnsupportedLogged;
+
+    /**
+     * Creates a copy of the preview with a preview video, the same as newer RedGifs posts have.
+     *
+     * @return The preview with a video, or null if it can't be created.
+     */
+    @Nullable
+    private static Preview createPreviewWithVideo(Preview preview, String id) {
+        List<Image> images = preview.getImages();
+        if (images == null || images.isEmpty()) {
+            // Reddit expects video posts to have a preview image.
+            return null;
+        }
+
+        int width = 0;
+        int height = 0;
+        ImageResolution source = images.get(0).getSource();
+        if (source != null) {
+            width = source.getWidth();
+            height = source.getHeight();
+        }
+
+        String baseUrl = "https://v.redd.it/" + SYNTHETIC_VIDEO_ID_PREFIX + id;
+        try {
+            RedditVideo video = new RedditVideo(
+                    null,
+                    baseUrl + "/DASHPlaylist.mpd",
+                    0,
+                    baseUrl + "/CMAF_480.mp4",
+                    height,
+                    width,
+                    baseUrl + "/HLSPlaylist.m3u8",
+                    true,
+                    "",
+                    "completed",
+                    null,
+                    null
+            );
+            return new Preview(images, video);
+        } catch (Throwable ex) {
+            // The constructors differ between Reddit versions.
+            if (!syntheticVideoUnsupportedLogged) {
+                syntheticVideoUnsupportedLogged = true;
+                Logger.printException(() -> "Cannot create a preview video in this Reddit version", ex);
+            }
+            return null;
         }
     }
 
@@ -353,13 +439,22 @@ public class RedGifsAudioPatch {
                 return url;
             }
 
+            final String syntheticPrefix = "v.redd.it/" + SYNTHETIC_VIDEO_ID_PREFIX;
+            if (key.startsWith(syntheticPrefix)) {
+                // Placeholder url of a post without a Reddit hosted video.
+                String id = key.substring(syntheticPrefix.length());
+                String redGifsUrl = resolveVideoUrl(id, "VideoUrls synthetic",
+                        SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS);
+                return redGifsUrl != null ? redGifsUrl : url;
+            }
+
             String id = mediaKeyToRedGifsId.get(key);
             if (id == null) {
                 diagnostic(() -> "playback unmapped key=" + key + " thread=" + threadName());
                 return url;
             }
 
-            String redGifsUrl = resolveVideoUrl(id, "VideoUrls key=" + key);
+            String redGifsUrl = resolveVideoUrl(id, "VideoUrls key=" + key, 0);
             return redGifsUrl != null ? redGifsUrl : url;
         } catch (Exception ex) {
             Logger.printException(() -> "getPlaybackUrl failure", ex);
@@ -385,7 +480,7 @@ public class RedGifsAudioPatch {
                 return null;
             }
 
-            return resolveVideoUrl(id, caller());
+            return resolveVideoUrl(id, caller(), 0);
         } catch (Exception ex) {
             Logger.printException(() -> "getVideoUrl failure", ex);
             return null;
@@ -396,7 +491,11 @@ public class RedGifsAudioPatch {
      * @return RedGifs video url, or null if it's not available.
      */
     @Nullable
-    private static String resolveVideoUrl(String id, String source) throws Exception {
+    /**
+     * @param mainThreadWaitMilliseconds How long to wait for the fetch on the main thread.
+     */
+    private static String resolveVideoUrl(String id, String source, long mainThreadWaitMilliseconds)
+            throws Exception {
         final String thread = threadName();
 
         CachedUrl cached = getCachedUrl(id);
@@ -408,8 +507,9 @@ public class RedGifsAudioPatch {
 
         FutureTask<String> fetch = startFetch(id);
 
-        if (Utils.isCurrentlyOnMainThread()) {
-            // Cannot wait on the main thread.
+        final boolean mainThread = Utils.isCurrentlyOnMainThread();
+        if (mainThread && mainThreadWaitMilliseconds <= 0) {
+            // Do not block the main thread.
             // Use the original url this time, and the RedGifs url once it's fetched.
             diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
                     + " cache=MISS result=SILENT(main thread, not waiting)");
@@ -420,7 +520,8 @@ public class RedGifsAudioPatch {
         String url;
         String outcome;
         try {
-            url = fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
+            url = fetch.get(mainThread ? mainThreadWaitMilliseconds : FETCH_WAIT_MILLISECONDS,
+                    TimeUnit.MILLISECONDS);
             outcome = "waited";
         } catch (TimeoutException ex) {
             url = null;
@@ -536,10 +637,11 @@ public class RedGifsAudioPatch {
             return null;
         }
 
+        // Videos without audio are also used, because posts without a Reddit hosted video
+        // play only the RedGifs video.
         JSONObject gif = Requester.parseJSONObject(connection).getJSONObject("gif");
         if (!gif.optBoolean("hasAudio", true)) {
             diagnostic(() -> "fetch id=" + id + " hasAudio=false");
-            return null;
         }
 
         // Prefer sd. The hd file is often 1080p at 3-5 Mbps, in a single non-adaptive file,

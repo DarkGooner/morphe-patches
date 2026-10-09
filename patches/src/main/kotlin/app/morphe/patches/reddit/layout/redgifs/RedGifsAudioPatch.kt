@@ -36,12 +36,22 @@ val redGifsAudioPatch = bytecodePatch(
                 it.opcode == Opcode.RETURN_VOID
             }
 
-            // All registers are unused at the final return, so v0 can be overwritten.
-            addInstructions(
+            // All registers are unused at the final return, so v0 and v1 can be overwritten.
+            // Older RedGifs posts have no Reddit hosted video and open in the browser.
+            // For these a preview video is set, and the post hint is changed to match newer
+            // RedGifs posts, so Reddit plays them in the app.
+            addInstructionsWithLabels(
                 returnIndex,
                 """
                     move-object/from16 v0, p0
-                    invoke-static { v0 }, $EXTENSION_CLASS->prefetch(Lcom/reddit/domain/model/Link;)V
+                    invoke-static { v0 }, $EXTENSION_CLASS->onLinkCreated(Lcom/reddit/domain/model/Link;)Lcom/reddit/domain/model/Preview;
+                    move-result-object v1
+                    if-eqz v1, :keep_preview
+                    iput-object v1, v0, Lcom/reddit/domain/model/Link;->preview:Lcom/reddit/domain/model/Preview;
+                    const-string v1, "rich:video"
+                    iput-object v1, v0, Lcom/reddit/domain/model/Link;->postHint:Ljava/lang/String;
+                    :keep_preview
+                    nop
                 """
             )
         }
