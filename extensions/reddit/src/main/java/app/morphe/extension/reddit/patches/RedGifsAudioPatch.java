@@ -40,6 +40,9 @@ import app.morphe.extension.shared.requests.Requester;
  * the fetch starts as soon as a post is loaded, and the video url lookup waits for it
  * when called off the main thread.
  * <p>
+ * The GraphQL feed creates video elements without the post url, so the RedGifs post
+ * is found using the link id recorded when the post was loaded.
+ * <p>
  * The Reddit mute button is not changed, so the user can still mute.
  *
  * @see <a href="https://github.com/Redgifs/api/wiki">RedGifs API</a>
@@ -82,7 +85,7 @@ public class RedGifsAudioPatch {
 
     private static final long TOKEN_CACHE_MILLISECONDS = 12 * 60 * 60 * 1000;
 
-    private static final int MAX_CACHE_SIZE = 200;
+    private static final int MAX_CACHE_SIZE = 500;
 
     private static final class CachedUrl {
         /**
@@ -102,13 +105,24 @@ public class RedGifsAudioPatch {
         }
     }
 
-    private static final Map<String, CachedUrl> cache = Collections.synchronizedMap(
-            new LinkedHashMap<String, CachedUrl>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, CachedUrl> eldest) {
-                    return size() > MAX_CACHE_SIZE;
-                }
-            });
+    private static <V> Map<String, V> createLruMap() {
+        return Collections.synchronizedMap(new LinkedHashMap<String, V>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
+                return size() > MAX_CACHE_SIZE;
+            }
+        });
+    }
+
+    /**
+     * RedGifs id to video url.
+     */
+    private static final Map<String, CachedUrl> cache = createLruMap();
+
+    /**
+     * Reddit link id (t3_...) to RedGifs id.
+     */
+    private static final Map<String, String> linkIdToRedGifsId = createLruMap();
 
     private static final Map<String, FutureTask<String>> pendingFetches = new ConcurrentHashMap<>();
 
@@ -117,11 +131,6 @@ public class RedGifsAudioPatch {
         thread.setDaemon(true);
         return thread;
     });
-
-    /**
-     * Post url of the feed video element currently being built.
-     */
-    private static final ThreadLocal<String> feedPostUrl = new ThreadLocal<>();
 
     @Nullable
     private static String token;
@@ -137,9 +146,10 @@ public class RedGifsAudioPatch {
     /**
      * Injection point. Called when a post is created.
      *
+     * @param linkId  Link id of the post (t3_...).
      * @param postUrl Url of the post.
      */
-    public static void prefetch(@Nullable String postUrl) {
+    public static void prefetch(@Nullable String linkId, @Nullable String postUrl) {
         try {
             if (postUrl == null || !Settings.REDGIFS_AUDIO.get()) {
                 return;
@@ -149,45 +159,55 @@ public class RedGifsAudioPatch {
             if (id == null) {
                 return;
             }
-            final boolean cached = getCachedUrl(id) != null;
-            diagnostic(() -> "prefetch id=" + id + " cached=" + cached + " thread=" + threadName());
-            if (cached) {
-                return;
+
+            if (linkId != null && linkIdToRedGifsId.put(linkId, id) == null) {
+                diagnostic(() -> "prefetch linkId=" + linkId + " id=" + id + " thread=" + threadName());
             }
 
-            startFetch(id);
+            if (getCachedUrl(id) == null) {
+                startFetch(id);
+            }
         } catch (Exception ex) {
             Logger.printException(() -> "prefetch failure", ex);
         }
     }
 
-    // TODO: Remove the diagnostic logging once RedGifs audio works consistently.
-    private static void diagnostic(Logger.LogMessage message) {
-        Logger.printInfo(() -> "RG-DIAG " + message.buildMessageString());
-    }
-
-    private static String threadName() {
-        return Utils.isCurrentlyOnMainThread() ? "MAIN" : Thread.currentThread().getName();
-    }
-
-    private static String caller() {
-        // [0] getStackTrace, [1] caller, [2] getVideoUrl, [3] patched app method or getFeedVideoUrl.
-        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
-            String className = element.getClassName();
-            if (!className.startsWith("java.") && !className.startsWith("dalvik.")
-                    && !className.equals(RedGifsAudioPatch.class.getName())) {
-                return className + "." + element.getMethodName();
+    /**
+     * Injection point. Called at the start of creating a feed video element.
+     *
+     * @param linkId     Link id of the post (t3_...).
+     * @param uniqueId   Unused.
+     * @param promoted   Unused.
+     * @param identifier Unused.
+     * @param type       Unused.
+     * @param preview    Unused.
+     * @param videoUrl   Reddit's audio-less video url.
+     * @return RedGifs video url with audio, or null to use the original url and video type.
+     */
+    @Nullable
+    public static String getVideoElementUrl(@Nullable String linkId, @Nullable String uniqueId,
+                                            boolean promoted, @Nullable Object identifier,
+                                            @Nullable Object type, @Nullable Object preview,
+                                            @Nullable String videoUrl) {
+        try {
+            if (linkId == null || !Settings.REDGIFS_AUDIO.get()) {
+                return null;
             }
-        }
-        return "unknown";
-    }
 
-    private static String describe(@Nullable String url) {
-        return url == null ? "SILENT(original)" : "REDGIFS";
+            String id = linkIdToRedGifsId.get(linkId);
+            if (id == null) {
+                return null;
+            }
+
+            return resolveVideoUrl(id, "VideoElement type=" + type);
+        } catch (Exception ex) {
+            Logger.printException(() -> "getVideoElementUrl failure", ex);
+            return null;
+        }
     }
 
     /**
-     * Injection point.
+     * Injection point. Post detail and full screen videos.
      *
      * @param postUrl Url of the post.
      * @return RedGifs video url with audio, or null to use the original url.
@@ -204,42 +224,7 @@ public class RedGifsAudioPatch {
                 return null;
             }
 
-            final String caller = caller();
-            final String thread = threadName();
-
-            CachedUrl cached = getCachedUrl(id);
-            if (cached != null) {
-                diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
-                        + " cache=HIT result=" + describe(cached.url));
-                return cached.url;
-            }
-
-            FutureTask<String> fetch = startFetch(id);
-
-            if (Utils.isCurrentlyOnMainThread()) {
-                // Cannot wait on the main thread.
-                // Use the original url this time, and the RedGifs url once it's fetched.
-                diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
-                        + " cache=MISS result=SILENT(main thread, not waiting)");
-                return null;
-            }
-
-            final long start = System.currentTimeMillis();
-            String url;
-            String outcome;
-            try {
-                url = fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
-                outcome = "waited";
-            } catch (TimeoutException ex) {
-                url = null;
-                outcome = "TIMEOUT";
-            }
-            final String result = describe(url);
-            final String waitOutcome = outcome;
-            final long waitMs = System.currentTimeMillis() - start;
-            diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
-                    + " cache=MISS " + waitOutcome + "=" + waitMs + "ms result=" + result);
-            return url;
+            return resolveVideoUrl(id, caller());
         } catch (Exception ex) {
             Logger.printException(() -> "getVideoUrl failure", ex);
             return null;
@@ -247,29 +232,72 @@ public class RedGifsAudioPatch {
     }
 
     /**
-     * Injection point. Called at the start of building a feed video element.
-     *
-     * @param postUrl Url of the post.
+     * @return RedGifs video url, or null if it's not available.
      */
-    public static void setFeedPostUrl(@Nullable String postUrl) {
-        feedPostUrl.set(postUrl);
+    @Nullable
+    private static String resolveVideoUrl(String id, String source) throws Exception {
+        final String thread = threadName();
+
+        CachedUrl cached = getCachedUrl(id);
+        if (cached != null) {
+            diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
+                    + " cache=HIT result=" + describe(cached.url));
+            return cached.url;
+        }
+
+        FutureTask<String> fetch = startFetch(id);
+
+        if (Utils.isCurrentlyOnMainThread()) {
+            // Cannot wait on the main thread.
+            // Use the original url this time, and the RedGifs url once it's fetched.
+            diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
+                    + " cache=MISS result=SILENT(main thread, not waiting)");
+            return null;
+        }
+
+        final long start = System.currentTimeMillis();
+        String url;
+        String outcome;
+        try {
+            url = fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
+            outcome = "waited";
+        } catch (TimeoutException ex) {
+            url = null;
+            outcome = "TIMEOUT";
+        }
+        final String result = describe(url);
+        final String waitOutcome = outcome;
+        final long waitMs = System.currentTimeMillis() - start;
+        diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
+                + " cache=MISS " + waitOutcome + "=" + waitMs + "ms result=" + result);
+        return url;
+    }
+
+    // TODO: Remove the diagnostic logging once RedGifs audio works consistently.
+    private static void diagnostic(Logger.LogMessage message) {
+        Logger.printInfo(() -> "RG-DIAG " + message.buildMessageString());
+    }
+
+    private static String threadName() {
+        return Utils.isCurrentlyOnMainThread() ? "MAIN" : Thread.currentThread().getName();
     }
 
     /**
-     * Injection point.
-     *
-     * @param originalUrl Reddit's audio-less video url.
-     * @return RedGifs video url with audio, or the original url.
+     * @return The first app method on the stack that is not part of this class.
      */
-    public static String getFeedVideoUrl(String originalUrl) {
-        String postUrl = feedPostUrl.get();
-        feedPostUrl.remove();
-        if (postUrl == null) {
-            diagnostic(() -> "getFeedVideoUrl called without a post url thread=" + threadName());
+    private static String caller() {
+        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
+            String className = element.getClassName();
+            if (!className.startsWith("java.") && !className.startsWith("dalvik.")
+                    && !className.equals(RedGifsAudioPatch.class.getName())) {
+                return className + "." + element.getMethodName();
+            }
         }
+        return "unknown";
+    }
 
-        String url = getVideoUrl(postUrl);
-        return url != null ? url : originalUrl;
+    private static String describe(@Nullable String url) {
+        return url == null ? "SILENT(original)" : "REDGIFS";
     }
 
     @Nullable

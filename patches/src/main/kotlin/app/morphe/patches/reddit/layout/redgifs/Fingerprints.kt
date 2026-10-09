@@ -67,30 +67,48 @@ internal object LinkMediaVideoUrlFingerprint : Fingerprint(
 )
 
 /**
- * Builds the feed video element, using preview.reddit_video_preview.dash_url directly.
+ * Main constructor of the feed VideoElement. Every feed video, from both the
+ * Link based and the GraphQL cell based feed mappers, is created through it.
  *
- * 2026.22.0: h5g.O(Link, int, boolean)
- * 2026.24.0: rvf.U(Link, int, boolean)
+ * Parameters start with: linkId, uniqueId, promoted, identifier, type, preview, videoUrl.
+ *
+ * 2026.22.0: ioj0.<init>
+ * 2026.24.0: c7l0.<init>
  */
-internal object FeedVideoElementFingerprint : Fingerprint(
-    returnType = "L",
-    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.STATIC, AccessFlags.FINAL),
-    parameters = listOf("Lcom/reddit/domain/model/Link;", "I", "Z"),
+internal object VideoElementConstructorFingerprint : Fingerprint(
+    name = "<init>",
+    returnType = "V",
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR),
+    parameters = listOf(
+        "Ljava/lang/String;",
+        "Ljava/lang/String;",
+        "Z",
+        "L",
+        "Lcom/reddit/feeds/model/VideoElement\$Type;",
+        "L",
+        "Ljava/lang/String;",
+        "I",
+        "I",
+        "Ljava/lang/String;",
+        "Z",
+        "Z",
+        "Ljava/lang/String;",
+        "Ljava/lang/String;",
+        "Ljava/lang/String;",
+        "Ljava/lang/String;",
+        "Ljava/lang/String;",
+        "L",
+        "L",
+        "Z",
+        "Z",
+        "Z",
+        "Lcom/reddit/feeds/caching/data/DataSourceType;",
+        "L"
+    ),
     filters = listOf(
         methodCall(
-            definingClass = "Lcom/reddit/domain/model/Preview;",
-            name = "getRedditVideoPreview",
-            returnType = "Lcom/reddit/domain/model/RedditVideo;"
-        ),
-        methodCall(
-            definingClass = "Lcom/reddit/domain/model/Link;",
-            name = "getUrl",
-            returnType = "Ljava/lang/String;"
-        ),
-        methodCall(
-            definingClass = "Lcom/reddit/domain/model/RedditVideo;",
-            name = "getDashUrl",
-            returnType = "Ljava/lang/String;"
+            definingClass = "Lcom/reddit/feeds/model/VideoElement\$Type;",
+            name = "ordinal"
         )
     )
 )
