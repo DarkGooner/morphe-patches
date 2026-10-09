@@ -146,7 +146,12 @@ public class RedGifsAudioPatch {
             }
 
             String id = getRedGifsId(postUrl);
-            if (id == null || getCachedUrl(id) != null) {
+            if (id == null) {
+                return;
+            }
+            final boolean cached = getCachedUrl(id) != null;
+            diagnostic(() -> "prefetch id=" + id + " cached=" + cached + " thread=" + threadName());
+            if (cached) {
                 return;
             }
 
@@ -154,6 +159,31 @@ public class RedGifsAudioPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "prefetch failure", ex);
         }
+    }
+
+    // TODO: Remove the diagnostic logging once RedGifs audio works consistently.
+    private static void diagnostic(Logger.LogMessage message) {
+        Logger.printInfo(() -> "RG-DIAG " + message.buildMessageString());
+    }
+
+    private static String threadName() {
+        return Utils.isCurrentlyOnMainThread() ? "MAIN" : Thread.currentThread().getName();
+    }
+
+    private static String caller() {
+        // [0] getStackTrace, [1] caller, [2] getVideoUrl, [3] patched app method or getFeedVideoUrl.
+        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
+            String className = element.getClassName();
+            if (!className.startsWith("java.") && !className.startsWith("dalvik.")
+                    && !className.equals(RedGifsAudioPatch.class.getName())) {
+                return className + "." + element.getMethodName();
+            }
+        }
+        return "unknown";
+    }
+
+    private static String describe(@Nullable String url) {
+        return url == null ? "SILENT(original)" : "REDGIFS";
     }
 
     /**
@@ -174,8 +204,13 @@ public class RedGifsAudioPatch {
                 return null;
             }
 
+            final String caller = caller();
+            final String thread = threadName();
+
             CachedUrl cached = getCachedUrl(id);
             if (cached != null) {
+                diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
+                        + " cache=HIT result=" + describe(cached.url));
                 return cached.url;
             }
 
@@ -184,16 +219,27 @@ public class RedGifsAudioPatch {
             if (Utils.isCurrentlyOnMainThread()) {
                 // Cannot wait on the main thread.
                 // Use the original url this time, and the RedGifs url once it's fetched.
-                Logger.printDebug(() -> "RedGifs video not fetched yet: " + id);
+                diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
+                        + " cache=MISS result=SILENT(main thread, not waiting)");
                 return null;
             }
 
+            final long start = System.currentTimeMillis();
+            String url;
+            String outcome;
             try {
-                return fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
+                url = fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
+                outcome = "waited";
             } catch (TimeoutException ex) {
-                Logger.printDebug(() -> "Timed out waiting for RedGifs video: " + id);
-                return null;
+                url = null;
+                outcome = "TIMEOUT";
             }
+            final String result = describe(url);
+            final String waitOutcome = outcome;
+            final long waitMs = System.currentTimeMillis() - start;
+            diagnostic(() -> "getVideoUrl id=" + id + " caller=" + caller + " thread=" + thread
+                    + " cache=MISS " + waitOutcome + "=" + waitMs + "ms result=" + result);
+            return url;
         } catch (Exception ex) {
             Logger.printException(() -> "getVideoUrl failure", ex);
             return null;
@@ -218,6 +264,9 @@ public class RedGifsAudioPatch {
     public static String getFeedVideoUrl(String originalUrl) {
         String postUrl = feedPostUrl.get();
         feedPostUrl.remove();
+        if (postUrl == null) {
+            diagnostic(() -> "getFeedVideoUrl called without a post url thread=" + threadName());
+        }
 
         String url = getVideoUrl(postUrl);
         return url != null ? url : originalUrl;
@@ -264,12 +313,16 @@ public class RedGifsAudioPatch {
 
     @Nullable
     private static String fetchAndCache(String id) {
+        final long start = System.currentTimeMillis();
         String url = null;
         try {
             url = fetchVideoUrl(id);
         } catch (Exception ex) {
             Logger.printException(() -> "Failed to fetch RedGifs video: " + id, ex);
         }
+        final String result = url == null ? "NO_URL" : "OK";
+        final long fetchMs = System.currentTimeMillis() - start;
+        diagnostic(() -> "fetch id=" + id + " result=" + result + " took=" + fetchMs + "ms");
 
         cache.put(id, url == null
                 ? new CachedUrl(null, NO_URL_CACHE_MILLISECONDS)
@@ -290,13 +343,13 @@ public class RedGifsAudioPatch {
         final int responseCode = connection.getResponseCode();
         if (responseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
             connection.disconnect();
-            Logger.printDebug(() -> "RedGifs video: " + id + " response code: " + responseCode);
+            diagnostic(() -> "fetch id=" + id + " response code: " + responseCode);
             return null;
         }
 
         JSONObject gif = Requester.parseJSONObject(connection).getJSONObject("gif");
         if (!gif.optBoolean("hasAudio", true)) {
-            Logger.printDebug(() -> "RedGifs video has no audio: " + id);
+            diagnostic(() -> "fetch id=" + id + " hasAudio=false");
             return null;
         }
 
