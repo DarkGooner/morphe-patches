@@ -1,3 +1,9 @@
+## [1.47.1](https://github.com/DarkGooner/morphe-patches/compare/v1.47.0...v1.47.1) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Play audio on the first play and in the feed ([0e6d5e6](https://github.com/DarkGooner/morphe-patches/commit/0e6d5e64517650283e6d901660e563225712acdb))
+
 ## [1.47.0](https://github.com/DarkGooner/morphe-patches/compare/v1.46.0...v1.47.0) (2026-10-09)
 
 ### ✨ New Features
