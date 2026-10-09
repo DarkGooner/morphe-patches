@@ -12,12 +12,10 @@ import androidx.annotation.Nullable;
 import com.reddit.domain.image.model.ImageResolution;
 import com.reddit.domain.model.Image;
 import com.reddit.domain.model.Link;
-import com.reddit.domain.model.LinkMedia;
 import com.reddit.domain.model.Preview;
 import com.reddit.domain.model.RedditVideo;
 import com.reddit.domain.model.Variant;
 import com.reddit.domain.model.Variants;
-import com.reddit.domain.model.VideoMedia;
 
 import org.json.JSONObject;
 
@@ -27,7 +25,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,8 +46,7 @@ import app.morphe.extension.shared.requests.Requester;
  * <p>
  * The RedGifs media url is case-sensitive and is not part of the Reddit post data,
  * so it must be fetched from the RedGifs API. To have it ready for the first play,
- * the fetch starts as soon as a post is loaded, and the video url lookup waits for it
- * when called off the main thread.
+ * the fetch starts as soon as a post is loaded.
  * <p>
  * Some video players are created only from Reddit's preview video url, without the post,
  * so the Reddit preview videos of each RedGifs post are recorded when the post is loaded,
@@ -74,6 +70,14 @@ public class RedGifsAudioPatch {
     );
 
     /**
+     * Matches the host and path of an url, without the query.
+     */
+    private static final Pattern URL_HOST_PATH_PATTERN = Pattern.compile(
+            "^https?://([a-z0-9.-]+)/([^?#]*)",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    /**
      * Temporary tokens only work with the user agent that requested them.
      */
     private static final String USER_AGENT = "Morphe";
@@ -87,6 +91,17 @@ public class RedGifsAudioPatch {
     private static final long FETCH_WAIT_MILLISECONDS = 3000;
 
     /**
+     * Prefix of the placeholder v.redd.it video id of posts without a Reddit hosted video.
+     */
+    private static final String SYNTHETIC_VIDEO_ID_PREFIX = "morpheredgifs";
+
+    /**
+     * How long the main thread waits for the RedGifs video of a placeholder url.
+     * A placeholder url cannot be played, so it's better to wait than to fail.
+     */
+    private static final long SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS = 2000;
+
+    /**
      * Media urls are not signed, but can change if the video is re-encoded or removed.
      */
     private static final long VIDEO_URL_CACHE_MILLISECONDS = 30 * 60 * 1000;
@@ -95,6 +110,11 @@ public class RedGifsAudioPatch {
      * How long to wait before retrying a video that could not be fetched.
      */
     private static final long NO_URL_CACHE_MILLISECONDS = 5 * 60 * 1000;
+
+    /**
+     * How long to remember a video that was deleted from RedGifs (HTTP 410).
+     */
+    private static final long DELETED_VIDEO_CACHE_MILLISECONDS = 24 * 60 * 60 * 1000;
 
     private static final long TOKEN_CACHE_MILLISECONDS = 12 * 60 * 60 * 1000;
 
@@ -133,28 +153,9 @@ public class RedGifsAudioPatch {
     private static final Map<String, CachedUrl> cache = createLruMap();
 
     /**
-     * Prefix of the placeholder v.redd.it video id of posts without a Reddit hosted video.
-     */
-    private static final String SYNTHETIC_VIDEO_ID_PREFIX = "morpheredgifs";
-
-    /**
-     * How long the main thread waits for the RedGifs video of a placeholder url.
-     * A placeholder url cannot be played, so it's better to wait than to fail.
-     */
-    private static final long SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS = 2000;
-
-    /**
      * Key of a Reddit preview video url (see {@link #getMediaKey(String)}) to RedGifs id.
      */
     private static final Map<String, String> mediaKeyToRedGifsId = createLruMap();
-
-    /**
-     * Matches the host and path of an url, without the query.
-     */
-    private static final Pattern URL_HOST_PATH_PATTERN = Pattern.compile(
-            "^https?://([a-z0-9.-]+)/([^?#]*)",
-            Pattern.CASE_INSENSITIVE
-    );
 
     private static final Map<String, FutureTask<String>> pendingFetches = new ConcurrentHashMap<>();
 
@@ -167,6 +168,8 @@ public class RedGifsAudioPatch {
     @Nullable
     private static String token;
     private static long tokenExpiresAt;
+
+    private static boolean syntheticVideoUnsupportedLogged;
 
     /**
      * @return If this patch was included during patching.
@@ -205,14 +208,9 @@ public class RedGifsAudioPatch {
             }
 
             Preview preview = link.getPreview();
-            boolean hasRedditVideo = mapPreviewVideos(preview, id);
-
             Preview syntheticPreview = null;
-            if (!hasRedditVideo && preview != null) {
+            if (!mapPreviewVideos(preview, id) && preview != null) {
                 syntheticPreview = createPreviewWithVideo(preview, id);
-                if (syntheticPreview != null && postsWithoutRedditVideoLogged.add(id)) {
-                    diagnostic(() -> "syntheticVideo id=" + id + " " + describePost(link));
-                }
             }
 
             if (getCachedUrl(id) == null) {
@@ -222,6 +220,69 @@ public class RedGifsAudioPatch {
             return syntheticPreview;
         } catch (Throwable ex) {
             Logger.printException(() -> "onLinkCreated failure", ex);
+            return null;
+        }
+    }
+
+    /**
+     * Injection point. Called when any video url is given to the video player.
+     *
+     * @param url Video url.
+     * @return RedGifs video url with audio, or the original url.
+     */
+    public static String getPlaybackUrl(String url) {
+        try {
+            if (url == null || !Settings.REDGIFS_AUDIO.get()) {
+                return url;
+            }
+
+            String key = getMediaKey(url);
+            if (key == null) {
+                return url;
+            }
+
+            String redGifsUrl;
+            final String syntheticPrefix = "v.redd.it/" + SYNTHETIC_VIDEO_ID_PREFIX;
+            if (key.startsWith(syntheticPrefix)) {
+                // Placeholder url of a post without a Reddit hosted video.
+                String id = key.substring(syntheticPrefix.length());
+                redGifsUrl = resolveVideoUrl(id, SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS);
+            } else {
+                String id = mediaKeyToRedGifsId.get(key);
+                if (id == null) {
+                    return url;
+                }
+                redGifsUrl = resolveVideoUrl(id, 0);
+            }
+
+            return redGifsUrl != null ? redGifsUrl : url;
+        } catch (Exception ex) {
+            Logger.printException(() -> "getPlaybackUrl failure", ex);
+            return url;
+        }
+    }
+
+    /**
+     * Injection point. Post detail and full screen videos.
+     *
+     * @param postUrl Url of the post.
+     * @return RedGifs video url with audio, or null to use the original url.
+     */
+    @Nullable
+    public static String getVideoUrl(@Nullable String postUrl) {
+        try {
+            if (postUrl == null || !Settings.REDGIFS_AUDIO.get()) {
+                return null;
+            }
+
+            String id = getRedGifsId(postUrl);
+            if (id == null) {
+                return null;
+            }
+
+            return resolveVideoUrl(id, 0);
+        } catch (Exception ex) {
+            Logger.printException(() -> "getVideoUrl failure", ex);
             return null;
         }
     }
@@ -266,7 +327,17 @@ public class RedGifsAudioPatch {
         return hasRedditVideo;
     }
 
-    private static boolean syntheticVideoUnsupportedLogged;
+    /**
+     * @return If the url is a Reddit hosted video.
+     */
+    private static boolean mapMediaUrl(@Nullable String url, String id) {
+        String key = getMediaKey(url);
+        if (key == null) {
+            return false;
+        }
+        mediaKeyToRedGifsId.put(key, id);
+        return true;
+    }
 
     /**
      * Creates a copy of the preview with a preview video, the same as newer RedGifs posts have.
@@ -305,6 +376,7 @@ public class RedGifsAudioPatch {
                     null,
                     null
             );
+            Logger.printDebug(() -> "Created preview video for RedGifs post without a Reddit video: " + id);
             return new Preview(images, video);
         } catch (Throwable ex) {
             // The constructors differ between Reddit versions.
@@ -314,79 +386,6 @@ public class RedGifsAudioPatch {
             }
             return null;
         }
-    }
-
-    /**
-     * @return If the url is a Reddit hosted video.
-     */
-    private static boolean mapMediaUrl(@Nullable String url, String id) {
-        String key = getMediaKey(url);
-        if (key == null) {
-            return false;
-        }
-        if (mediaKeyToRedGifsId.put(key, id) == null) {
-            diagnostic(() -> "map key=" + key + " id=" + id + " thread=" + threadName());
-        }
-        return true;
-    }
-
-    private static final Set<String> postsWithoutRedditVideoLogged =
-            Collections.newSetFromMap(RedGifsAudioPatch.<Boolean>createLruMap());
-
-    /**
-     * Describes a post that has no Reddit hosted video, to find how to play it in the app.
-     */
-    private static String describePost(Link link) {
-        StringBuilder sb = new StringBuilder();
-        try {
-            sb.append("linkId=").append(link.getKindWithId());
-            sb.append(" postHint=").append(link.getPostHint());
-            sb.append(" domain=").append(link.getDomain());
-            sb.append(" isVideo=").append(link.isVideo());
-            sb.append(" isSelf=").append(link.isSelf());
-            sb.append(" openExternally=").append(link.getShouldOpenExternally());
-            String thumbnail = link.getThumbnail();
-            sb.append(" thumbnail=").append(thumbnail == null ? "null" : getMediaKeyOrHost(thumbnail));
-
-            Preview preview = link.getPreview();
-            if (preview == null) {
-                sb.append(" preview=null");
-            } else {
-                sb.append(" previewVideo=").append(preview.getRedditVideoPreview() != null);
-                List<Image> images = preview.getImages();
-                sb.append(" images=").append(images == null ? "null" : String.valueOf(images.size()));
-                if (images != null && !images.isEmpty()) {
-                    Image image = images.get(0);
-                    ImageResolution source = image.getSource();
-                    if (source != null) {
-                        sb.append(" source=").append(source.getWidth()).append('x').append(source.getHeight())
-                                .append(' ').append(getMediaKeyOrHost(source.getUrl()));
-                    }
-                    Variants variants = image.getVariants();
-                    sb.append(" mp4Variant=").append(variants != null && variants.getMp4() != null);
-                }
-            }
-
-            LinkMedia media = link.getMedia();
-            if (media == null) {
-                sb.append(" media=null");
-            } else {
-                sb.append(" mediaRedditVideo=").append(media.getRedditVideo() != null);
-                VideoMedia video = media.getVideo();
-                sb.append(" mediaVideo=").append(video == null ? "null" : getMediaKeyOrHost(video.getUrl()));
-            }
-        } catch (Exception ex) {
-            sb.append(" describe failed: ").append(ex);
-        }
-        return sb.toString();
-    }
-
-    private static String getMediaKeyOrHost(@Nullable String url) {
-        if (url == null) {
-            return "null";
-        }
-        Matcher matcher = URL_HOST_PATH_PATTERN.matcher(url);
-        return matcher.find() ? matcher.group(1) : "other";
     }
 
     /**
@@ -422,86 +421,24 @@ public class RedGifsAudioPatch {
         return host + "/" + path;
     }
 
-    /**
-     * Injection point. Called when any video url is given to the video player.
-     *
-     * @param url Video url.
-     * @return RedGifs video url with audio, or the original url.
-     */
-    public static String getPlaybackUrl(String url) {
-        try {
-            if (url == null || !Settings.REDGIFS_AUDIO.get()) {
-                return url;
-            }
-
-            String key = getMediaKey(url);
-            if (key == null) {
-                return url;
-            }
-
-            final String syntheticPrefix = "v.redd.it/" + SYNTHETIC_VIDEO_ID_PREFIX;
-            if (key.startsWith(syntheticPrefix)) {
-                // Placeholder url of a post without a Reddit hosted video.
-                String id = key.substring(syntheticPrefix.length());
-                String redGifsUrl = resolveVideoUrl(id, "VideoUrls synthetic",
-                        SYNTHETIC_VIDEO_MAIN_THREAD_WAIT_MILLISECONDS);
-                return redGifsUrl != null ? redGifsUrl : url;
-            }
-
-            String id = mediaKeyToRedGifsId.get(key);
-            if (id == null) {
-                diagnostic(() -> "playback unmapped key=" + key + " thread=" + threadName());
-                return url;
-            }
-
-            String redGifsUrl = resolveVideoUrl(id, "VideoUrls key=" + key, 0);
-            return redGifsUrl != null ? redGifsUrl : url;
-        } catch (Exception ex) {
-            Logger.printException(() -> "getPlaybackUrl failure", ex);
-            return url;
-        }
-    }
-
-    /**
-     * Injection point. Post detail and full screen videos.
-     *
-     * @param postUrl Url of the post.
-     * @return RedGifs video url with audio, or null to use the original url.
-     */
     @Nullable
-    public static String getVideoUrl(@Nullable String postUrl) {
-        try {
-            if (postUrl == null || !Settings.REDGIFS_AUDIO.get()) {
-                return null;
-            }
-
-            String id = getRedGifsId(postUrl);
-            if (id == null) {
-                return null;
-            }
-
-            return resolveVideoUrl(id, caller(), 0);
-        } catch (Exception ex) {
-            Logger.printException(() -> "getVideoUrl failure", ex);
+    private static String getRedGifsId(String postUrl) {
+        Matcher matcher = REDGIFS_ID_PATTERN.matcher(postUrl);
+        if (!matcher.find()) {
             return null;
         }
+        //noinspection DataFlowIssue
+        return matcher.group(1).toLowerCase(Locale.US);
     }
 
     /**
+     * @param mainThreadWaitMilliseconds How long to wait for the fetch on the main thread.
      * @return RedGifs video url, or null if it's not available.
      */
     @Nullable
-    /**
-     * @param mainThreadWaitMilliseconds How long to wait for the fetch on the main thread.
-     */
-    private static String resolveVideoUrl(String id, String source, long mainThreadWaitMilliseconds)
-            throws Exception {
-        final String thread = threadName();
-
+    private static String resolveVideoUrl(String id, long mainThreadWaitMilliseconds) throws Exception {
         CachedUrl cached = getCachedUrl(id);
         if (cached != null) {
-            diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
-                    + " cache=HIT result=" + describe(cached.url));
             return cached.url;
         }
 
@@ -511,65 +448,17 @@ public class RedGifsAudioPatch {
         if (mainThread && mainThreadWaitMilliseconds <= 0) {
             // Do not block the main thread.
             // Use the original url this time, and the RedGifs url once it's fetched.
-            diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
-                    + " cache=MISS result=SILENT(main thread, not waiting)");
+            Logger.printDebug(() -> "RedGifs video not fetched yet: " + id);
             return null;
         }
 
-        final long start = System.currentTimeMillis();
-        String url;
-        String outcome;
         try {
-            url = fetch.get(mainThread ? mainThreadWaitMilliseconds : FETCH_WAIT_MILLISECONDS,
+            return fetch.get(mainThread ? mainThreadWaitMilliseconds : FETCH_WAIT_MILLISECONDS,
                     TimeUnit.MILLISECONDS);
-            outcome = "waited";
         } catch (TimeoutException ex) {
-            url = null;
-            outcome = "TIMEOUT";
-        }
-        final String result = describe(url);
-        final String waitOutcome = outcome;
-        final long waitMs = System.currentTimeMillis() - start;
-        diagnostic(() -> "resolve id=" + id + " source=" + source + " thread=" + thread
-                + " cache=MISS " + waitOutcome + "=" + waitMs + "ms result=" + result);
-        return url;
-    }
-
-    // TODO: Remove the diagnostic logging once RedGifs audio works consistently.
-    private static void diagnostic(Logger.LogMessage message) {
-        Logger.printInfo(() -> "RG-DIAG " + message.buildMessageString());
-    }
-
-    private static String threadName() {
-        return Utils.isCurrentlyOnMainThread() ? "MAIN" : Thread.currentThread().getName();
-    }
-
-    /**
-     * @return The first app method on the stack that is not part of this class.
-     */
-    private static String caller() {
-        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
-            String className = element.getClassName();
-            if (!className.startsWith("java.") && !className.startsWith("dalvik.")
-                    && !className.equals(RedGifsAudioPatch.class.getName())) {
-                return className + "." + element.getMethodName();
-            }
-        }
-        return "unknown";
-    }
-
-    private static String describe(@Nullable String url) {
-        return url == null ? "SILENT(original)" : "REDGIFS";
-    }
-
-    @Nullable
-    private static String getRedGifsId(String postUrl) {
-        Matcher matcher = REDGIFS_ID_PATTERN.matcher(postUrl);
-        if (!matcher.find()) {
+            Logger.printDebug(() -> "Timed out waiting for RedGifs video: " + id);
             return null;
         }
-        //noinspection DataFlowIssue
-        return matcher.group(1).toLowerCase(Locale.US);
     }
 
     @Nullable
@@ -603,25 +492,19 @@ public class RedGifsAudioPatch {
 
     @Nullable
     private static String fetchAndCache(String id) {
-        final long start = System.currentTimeMillis();
-        String url = null;
+        CachedUrl result;
         try {
-            url = fetchVideoUrl(id);
+            result = fetchVideoUrl(id);
         } catch (Exception ex) {
             Logger.printException(() -> "Failed to fetch RedGifs video: " + id, ex);
+            result = new CachedUrl(null, NO_URL_CACHE_MILLISECONDS);
         }
-        final String result = url == null ? "NO_URL" : "OK";
-        final long fetchMs = System.currentTimeMillis() - start;
-        diagnostic(() -> "fetch id=" + id + " result=" + result + " took=" + fetchMs + "ms");
 
-        cache.put(id, url == null
-                ? new CachedUrl(null, NO_URL_CACHE_MILLISECONDS)
-                : new CachedUrl(url, VIDEO_URL_CACHE_MILLISECONDS));
-        return url;
+        cache.put(id, result);
+        return result.url;
     }
 
-    @Nullable
-    private static String fetchVideoUrl(String id) throws Exception {
+    private static CachedUrl fetchVideoUrl(String id) throws Exception {
         Utils.verifyOffMainThread();
 
         HttpURLConnection connection = openGifConnection(id, getToken(false));
@@ -633,16 +516,17 @@ public class RedGifsAudioPatch {
         final int responseCode = connection.getResponseCode();
         if (responseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
             connection.disconnect();
-            diagnostic(() -> "fetch id=" + id + " response code: " + responseCode);
-            return null;
+            Logger.printDebug(() -> "RedGifs video: " + id + " response code: " + responseCode);
+
+            // Videos deleted from RedGifs do not come back.
+            return new CachedUrl(null, responseCode == HttpURLConnection.HTTP_GONE
+                    ? DELETED_VIDEO_CACHE_MILLISECONDS
+                    : NO_URL_CACHE_MILLISECONDS);
         }
 
         // Videos without audio are also used, because posts without a Reddit hosted video
         // play only the RedGifs video.
         JSONObject gif = Requester.parseJSONObject(connection).getJSONObject("gif");
-        if (!gif.optBoolean("hasAudio", true)) {
-            diagnostic(() -> "fetch id=" + id + " hasAudio=false");
-        }
 
         // Prefer sd. The hd file is often 1080p at 3-5 Mbps, in a single non-adaptive file,
         // sometimes with the index at the end. That causes playback to pause and resume while
@@ -652,7 +536,10 @@ public class RedGifsAudioPatch {
         if (url.isEmpty()) {
             url = urls.optString("hd");
         }
-        return url.isEmpty() ? null : url;
+
+        return url.isEmpty()
+                ? new CachedUrl(null, NO_URL_CACHE_MILLISECONDS)
+                : new CachedUrl(url, VIDEO_URL_CACHE_MILLISECONDS);
     }
 
     private static HttpURLConnection openGifConnection(String id, String bearerToken) throws Exception {
