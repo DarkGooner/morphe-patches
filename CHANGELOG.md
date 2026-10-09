@@ -1,3 +1,9 @@
+## [1.47.3](https://github.com/DarkGooner/morphe-patches/compare/v1.47.2...v1.47.3) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Patch videos in the GraphQL feed ([461cda3](https://github.com/DarkGooner/morphe-patches/commit/461cda35fac88b5aa4b12a937fbf786a7d77c301))
+
 ## [1.47.2](https://github.com/DarkGooner/morphe-patches/compare/v1.47.1...v1.47.2) (2026-10-09)
 
 ### 🐛 Bug Fixes
