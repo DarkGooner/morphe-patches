@@ -1,3 +1,9 @@
+## [1.47.5](https://github.com/DarkGooner/morphe-patches/compare/v1.47.4...v1.47.5) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Replace the url of every video player ([0cc18f5](https://github.com/DarkGooner/morphe-patches/commit/0cc18f5d38006d39f3fa4b74676b8f45648f1ff4))
+
 ## [1.47.4](https://github.com/DarkGooner/morphe-patches/compare/v1.47.3...v1.47.4) (2026-10-09)
 
 ### 🐛 Bug Fixes
