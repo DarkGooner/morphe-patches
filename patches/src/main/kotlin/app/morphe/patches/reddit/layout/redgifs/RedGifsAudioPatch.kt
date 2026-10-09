@@ -65,8 +65,10 @@ val redGifsAudioPatch = bytecodePatch(
             """
         )
 
-        // Post detail and full screen videos.
-        LinkVideoUrlFingerprint.method.addInstructionsWithLabels(
+        // Post detail and full screen videos. These replace the url before the video player
+        // is created. Optional, because the VideoUrls hook also handles these videos, and these
+        // obfuscated methods are the most likely to change between Reddit versions.
+        LinkVideoUrlFingerprint.methodOrNull?.addInstructionsWithLabels(
             0,
             """
                 move-object/from16 v0, p1
@@ -81,7 +83,7 @@ val redGifsAudioPatch = bytecodePatch(
             """
         )
 
-        LinkMediaVideoUrlFingerprint.method.addInstructionsWithLabels(
+        LinkMediaVideoUrlFingerprint.methodOrNull?.addInstructionsWithLabels(
             0,
             """
                 move-object/from16 v0, p4

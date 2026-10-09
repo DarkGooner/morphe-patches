@@ -79,12 +79,15 @@ internal object VideoUrlsToStringFingerprint : Fingerprint(
     strings = listOf("VideoUrls(defaultUrl=")
 )
 
+/**
+ * The first parameter is the default url.
+ * 2026.22.0: (String defaultUrl, Map), 2026.24.0: (String defaultUrl).
+ */
 internal object VideoUrlsConstructorFingerprint : Fingerprint(
     classFingerprint = VideoUrlsToStringFingerprint,
     name = "<init>",
     returnType = "V",
-    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR),
-    parameters = listOf("Ljava/lang/String;")
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR)
 )
 
 /**
