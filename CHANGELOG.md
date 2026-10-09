@@ -1,3 +1,9 @@
+## [1.47.2](https://github.com/DarkGooner/morphe-patches/compare/v1.47.1...v1.47.2) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Add temporary diagnostic logging ([4ac2c97](https://github.com/DarkGooner/morphe-patches/commit/4ac2c9757dcb5052a8b18ae769f7d3ac7065ff3f))
+
 ## [1.47.1](https://github.com/DarkGooner/morphe-patches/compare/v1.47.0...v1.47.1) (2026-10-09)
 
 ### 🐛 Bug Fixes
