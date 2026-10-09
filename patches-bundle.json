@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-09T18:37:51",
-  "description": "## [1.47.8](https://github.com/DarkGooner/morphe-patches/compare/v1.47.7...v1.47.8) (2026-10-09)\n\n### 🐛 Bug Fixes\n\n* **Reddit - Enable RedGifs audio:** Play older RedGifs posts in the app ([9fad1f2](https://github.com/DarkGooner/morphe-patches/commit/9fad1f2417440e66e27aa5a13656180181b53151))",
-  "download_url": "https://github.com/DarkGooner/morphe-patches/releases/download/v1.47.8/patches-1.47.8.mpp",
+  "created_at": "2026-10-09T19:35:24",
+  "description": "## [1.47.9](https://github.com/DarkGooner/morphe-patches/compare/v1.47.8...v1.47.9) (2026-10-09)\n\n### 🐛 Bug Fixes\n\n* **Reddit - Enable RedGifs audio:** Improve compatibility with other Reddit versions ([547e061](https://github.com/DarkGooner/morphe-patches/commit/547e06151768c079f3d9805a44c5a13fa873e3d0))\n* **Reddit - Enable RedGifs audio:** Remove diagnostic logging ([6c58cc0](https://github.com/DarkGooner/morphe-patches/commit/6c58cc06e78217c5c5efa77d1f8d8f3126efa285))",
+  "download_url": "https://github.com/DarkGooner/morphe-patches/releases/download/v1.47.9/patches-1.47.9.mpp",
   "signature_download_url": "",
-  "version": "1.47.8"
+  "version": "1.47.9"
 }
