@@ -1,3 +1,9 @@
+## [1.47.4](https://github.com/DarkGooner/morphe-patches/compare/v1.47.3...v1.47.4) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Fix VideoElement fingerprint ([db5ac2b](https://github.com/DarkGooner/morphe-patches/commit/db5ac2bf7260718cdfc36233c822d121c4d56c75))
+
 ## [1.47.3](https://github.com/DarkGooner/morphe-patches/compare/v1.47.2...v1.47.3) (2026-10-09)
 
 ### 🐛 Bug Fixes
