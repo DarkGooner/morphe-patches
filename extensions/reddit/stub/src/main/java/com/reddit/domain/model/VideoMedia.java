@@ -1,13 +1,11 @@
 package com.reddit.domain.model;
 
-import com.reddit.domain.image.model.ImageResolution;
-
-public class Image {
-    public ImageResolution getSource() {
+public class VideoMedia {
+    public String getUrl() {
         throw new UnsupportedOperationException("Stub");
     }
 
-    public Variants getVariants() {
+    public String getEmbedHtml() {
         throw new UnsupportedOperationException("Stub");
     }
 }

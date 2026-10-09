@@ -12,10 +12,12 @@ import androidx.annotation.Nullable;
 import com.reddit.domain.image.model.ImageResolution;
 import com.reddit.domain.model.Image;
 import com.reddit.domain.model.Link;
+import com.reddit.domain.model.LinkMedia;
 import com.reddit.domain.model.Preview;
 import com.reddit.domain.model.RedditVideo;
 import com.reddit.domain.model.Variant;
 import com.reddit.domain.model.Variants;
+import com.reddit.domain.model.VideoMedia;
 
 import org.json.JSONObject;
 
@@ -25,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -182,13 +185,14 @@ public class RedGifsAudioPatch {
                 return;
             }
 
+            boolean hasRedditVideo = false;
             Preview preview = link.getPreview();
             if (preview != null) {
                 RedditVideo video = preview.getRedditVideoPreview();
                 if (video != null) {
-                    mapMediaUrl(video.getDashUrl(), id);
-                    mapMediaUrl(video.getHlsUrl(), id);
-                    mapMediaUrl(video.getFallBackUrl(), id);
+                    hasRedditVideo |= mapMediaUrl(video.getDashUrl(), id);
+                    hasRedditVideo |= mapMediaUrl(video.getHlsUrl(), id);
+                    hasRedditVideo |= mapMediaUrl(video.getFallBackUrl(), id);
                 }
 
                 List<Image> images = preview.getImages();
@@ -202,16 +206,20 @@ public class RedGifsAudioPatch {
 
                         ImageResolution source = mp4.getSource();
                         if (source != null) {
-                            mapMediaUrl(source.getUrl(), id);
+                            hasRedditVideo |= mapMediaUrl(source.getUrl(), id);
                         }
                         List<ImageResolution> resolutions = mp4.getResolutions();
                         if (resolutions != null) {
                             for (ImageResolution resolution : resolutions) {
-                                mapMediaUrl(resolution.getUrl(), id);
+                                hasRedditVideo |= mapMediaUrl(resolution.getUrl(), id);
                             }
                         }
                     }
                 }
+            }
+
+            if (!hasRedditVideo && postsWithoutRedditVideoLogged.add(id)) {
+                diagnostic(() -> "noRedditVideo id=" + id + " " + describePost(link));
             }
 
             if (getCachedUrl(id) == null) {
@@ -222,11 +230,77 @@ public class RedGifsAudioPatch {
         }
     }
 
-    private static void mapMediaUrl(@Nullable String url, String id) {
+    /**
+     * @return If the url is a Reddit hosted video.
+     */
+    private static boolean mapMediaUrl(@Nullable String url, String id) {
         String key = getMediaKey(url);
-        if (key != null && mediaKeyToRedGifsId.put(key, id) == null) {
+        if (key == null) {
+            return false;
+        }
+        if (mediaKeyToRedGifsId.put(key, id) == null) {
             diagnostic(() -> "map key=" + key + " id=" + id + " thread=" + threadName());
         }
+        return true;
+    }
+
+    private static final Set<String> postsWithoutRedditVideoLogged =
+            Collections.newSetFromMap(RedGifsAudioPatch.<Boolean>createLruMap());
+
+    /**
+     * Describes a post that has no Reddit hosted video, to find how to play it in the app.
+     */
+    private static String describePost(Link link) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            sb.append("linkId=").append(link.getKindWithId());
+            sb.append(" postHint=").append(link.getPostHint());
+            sb.append(" domain=").append(link.getDomain());
+            sb.append(" isVideo=").append(link.isVideo());
+            sb.append(" isSelf=").append(link.isSelf());
+            sb.append(" openExternally=").append(link.getShouldOpenExternally());
+            String thumbnail = link.getThumbnail();
+            sb.append(" thumbnail=").append(thumbnail == null ? "null" : getMediaKeyOrHost(thumbnail));
+
+            Preview preview = link.getPreview();
+            if (preview == null) {
+                sb.append(" preview=null");
+            } else {
+                sb.append(" previewVideo=").append(preview.getRedditVideoPreview() != null);
+                List<Image> images = preview.getImages();
+                sb.append(" images=").append(images == null ? "null" : String.valueOf(images.size()));
+                if (images != null && !images.isEmpty()) {
+                    Image image = images.get(0);
+                    ImageResolution source = image.getSource();
+                    if (source != null) {
+                        sb.append(" source=").append(source.getWidth()).append('x').append(source.getHeight())
+                                .append(' ').append(getMediaKeyOrHost(source.getUrl()));
+                    }
+                    Variants variants = image.getVariants();
+                    sb.append(" mp4Variant=").append(variants != null && variants.getMp4() != null);
+                }
+            }
+
+            LinkMedia media = link.getMedia();
+            if (media == null) {
+                sb.append(" media=null");
+            } else {
+                sb.append(" mediaRedditVideo=").append(media.getRedditVideo() != null);
+                VideoMedia video = media.getVideo();
+                sb.append(" mediaVideo=").append(video == null ? "null" : getMediaKeyOrHost(video.getUrl()));
+            }
+        } catch (Exception ex) {
+            sb.append(" describe failed: ").append(ex);
+        }
+        return sb.toString();
+    }
+
+    private static String getMediaKeyOrHost(@Nullable String url) {
+        if (url == null) {
+            return "null";
+        }
+        Matcher matcher = URL_HOST_PATH_PATTERN.matcher(url);
+        return matcher.find() ? matcher.group(1) : "other";
     }
 
     /**
