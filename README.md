@@ -35,7 +35,7 @@ All modifications made by Morphe, along with their dates, can be found in the Gi
 ## 🩹 Patches list
 
 <!-- PATCHES_START -->
-> **[v1.47.7](https://github.com/DarkGooner/morphe-patches/releases/tag/v1.47.7)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;23 patches total
+> **[v1.47.8](https://github.com/DarkGooner/morphe-patches/releases/tag/v1.47.8)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;23 patches total
 <details>
 <summary>📦 Reddit&nbsp;&nbsp;•&nbsp;&nbsp;21 patches</summary>
 <br>
