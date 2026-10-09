@@ -8,8 +8,10 @@
 package app.morphe.patches.reddit.layout.redgifs
 
 import app.morphe.patcher.Fingerprint
+import app.morphe.patcher.fieldAccess
 import app.morphe.patcher.methodCall
 import com.android.tools.smali.dexlib2.AccessFlags
+import com.android.tools.smali.dexlib2.Opcode
 
 /**
  * Reddit has no RedGifs specific code. A RedGifs post is a link post whose playable media
@@ -62,4 +64,50 @@ internal object LinkMediaVideoUrlFingerprint : Fingerprint(
         "Ljava/lang/String;"
     ),
     filters = PREVIEW_VIDEO_URL_FILTERS
+)
+
+/**
+ * Builds the feed video element, using preview.reddit_video_preview.dash_url directly.
+ *
+ * 2026.22.0: h5g.O(Link, int, boolean)
+ * 2026.24.0: rvf.U(Link, int, boolean)
+ */
+internal object FeedVideoElementFingerprint : Fingerprint(
+    returnType = "L",
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.STATIC, AccessFlags.FINAL),
+    parameters = listOf("Lcom/reddit/domain/model/Link;", "I", "Z"),
+    filters = listOf(
+        methodCall(
+            definingClass = "Lcom/reddit/domain/model/Preview;",
+            name = "getRedditVideoPreview",
+            returnType = "Lcom/reddit/domain/model/RedditVideo;"
+        ),
+        methodCall(
+            definingClass = "Lcom/reddit/domain/model/Link;",
+            name = "getUrl",
+            returnType = "Ljava/lang/String;"
+        ),
+        methodCall(
+            definingClass = "Lcom/reddit/domain/model/RedditVideo;",
+            name = "getDashUrl",
+            returnType = "Ljava/lang/String;"
+        )
+    )
+)
+
+/**
+ * Main Link constructor, the only one that assigns the url field.
+ */
+internal object LinkConstructorFingerprint : Fingerprint(
+    definingClass = "Lcom/reddit/domain/model/Link;",
+    name = "<init>",
+    returnType = "V",
+    filters = listOf(
+        fieldAccess(
+            opcode = Opcode.IPUT_OBJECT,
+            definingClass = "Lcom/reddit/domain/model/Link;",
+            name = "url",
+            type = "Ljava/lang/String;"
+        )
+    )
 )

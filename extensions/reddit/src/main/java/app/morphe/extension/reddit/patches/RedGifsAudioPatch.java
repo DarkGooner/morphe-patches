@@ -13,11 +13,15 @@ import org.json.JSONObject;
 
 import java.net.HttpURLConnection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +34,11 @@ import app.morphe.extension.shared.requests.Requester;
  * Reddit plays RedGifs posts using its own audio-less transcode
  * (preview.reddit_video_preview or the preview mp4 variant).
  * This replaces that url with the original RedGifs video, which includes audio.
+ * <p>
+ * The RedGifs media url is case-sensitive and is not part of the Reddit post data,
+ * so it must be fetched from the RedGifs API. To have it ready for the first play,
+ * the fetch starts as soon as a post is loaded, and the video url lookup waits for it
+ * when called off the main thread.
  * <p>
  * The Reddit mute button is not changed, so the user can still mute.
  *
@@ -54,6 +63,12 @@ public class RedGifsAudioPatch {
     private static final String USER_AGENT = "Morphe";
 
     private static final int CONNECTION_TIMEOUT_MILLISECONDS = 5000;
+
+    /**
+     * How long a video url lookup off the main thread waits for the fetch to finish.
+     * If it takes longer, the original silent video is used.
+     */
+    private static final long FETCH_WAIT_MILLISECONDS = 3000;
 
     /**
      * Media urls are not signed, but can change if the video is re-encoded or removed.
@@ -95,7 +110,18 @@ public class RedGifsAudioPatch {
                 }
             });
 
-    private static final Set<String> pendingFetches = Collections.synchronizedSet(new HashSet<>());
+    private static final Map<String, FutureTask<String>> pendingFetches = new ConcurrentHashMap<>();
+
+    private static final ExecutorService fetchExecutor = Executors.newFixedThreadPool(4, runnable -> {
+        Thread thread = new Thread(runnable, "morphe-redgifs");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * Post url of the feed video element currently being built.
+     */
+    private static final ThreadLocal<String> feedPostUrl = new ThreadLocal<>();
 
     @Nullable
     private static String token;
@@ -106,6 +132,28 @@ public class RedGifsAudioPatch {
      */
     public static boolean isPatchIncluded() {
         return false;  // Modified during patching.
+    }
+
+    /**
+     * Injection point. Called when a post is created.
+     *
+     * @param postUrl Url of the post.
+     */
+    public static void prefetch(@Nullable String postUrl) {
+        try {
+            if (postUrl == null || !Settings.REDGIFS_AUDIO.get()) {
+                return;
+            }
+
+            String id = getRedGifsId(postUrl);
+            if (id == null || getCachedUrl(id) != null) {
+                return;
+            }
+
+            startFetch(id);
+        } catch (Exception ex) {
+            Logger.printException(() -> "prefetch failure", ex);
+        }
     }
 
     /**
@@ -126,23 +174,53 @@ public class RedGifsAudioPatch {
                 return null;
             }
 
-            CachedUrl cached = cache.get(id);
-            if (cached != null && !cached.isExpired()) {
+            CachedUrl cached = getCachedUrl(id);
+            if (cached != null) {
                 return cached.url;
             }
 
+            FutureTask<String> fetch = startFetch(id);
+
             if (Utils.isCurrentlyOnMainThread()) {
-                // Network calls cannot be made on the main thread.
+                // Cannot wait on the main thread.
                 // Use the original url this time, and the RedGifs url once it's fetched.
-                fetchInBackground(id);
+                Logger.printDebug(() -> "RedGifs video not fetched yet: " + id);
                 return null;
             }
 
-            return fetchAndCache(id);
+            try {
+                return fetch.get(FETCH_WAIT_MILLISECONDS, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ex) {
+                Logger.printDebug(() -> "Timed out waiting for RedGifs video: " + id);
+                return null;
+            }
         } catch (Exception ex) {
             Logger.printException(() -> "getVideoUrl failure", ex);
             return null;
         }
+    }
+
+    /**
+     * Injection point. Called at the start of building a feed video element.
+     *
+     * @param postUrl Url of the post.
+     */
+    public static void setFeedPostUrl(@Nullable String postUrl) {
+        feedPostUrl.set(postUrl);
+    }
+
+    /**
+     * Injection point.
+     *
+     * @param originalUrl Reddit's audio-less video url.
+     * @return RedGifs video url with audio, or the original url.
+     */
+    public static String getFeedVideoUrl(String originalUrl) {
+        String postUrl = feedPostUrl.get();
+        feedPostUrl.remove();
+
+        String url = getVideoUrl(postUrl);
+        return url != null ? url : originalUrl;
     }
 
     @Nullable
@@ -155,17 +233,33 @@ public class RedGifsAudioPatch {
         return matcher.group(1).toLowerCase(Locale.US);
     }
 
-    private static void fetchInBackground(String id) {
-        if (!pendingFetches.add(id)) {
-            return;
+    @Nullable
+    private static CachedUrl getCachedUrl(String id) {
+        CachedUrl cached = cache.get(id);
+        return cached == null || cached.isExpired() ? null : cached;
+    }
+
+    private static FutureTask<String> startFetch(String id) {
+        FutureTask<String> existing = pendingFetches.get(id);
+        if (existing != null) {
+            return existing;
         }
-        Utils.runOnBackgroundThread(() -> {
+
+        FutureTask<String> fetch = new FutureTask<>(() -> {
             try {
-                fetchAndCache(id);
+                return fetchAndCache(id);
             } finally {
                 pendingFetches.remove(id);
             }
         });
+
+        existing = pendingFetches.putIfAbsent(id, fetch);
+        if (existing != null) {
+            return existing;
+        }
+
+        fetchExecutor.execute(fetch);
+        return fetch;
     }
 
     @Nullable
