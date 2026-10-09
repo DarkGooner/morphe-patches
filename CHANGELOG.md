@@ -1,3 +1,9 @@
+## [1.47.7](https://github.com/DarkGooner/morphe-patches/compare/v1.47.6...v1.47.7) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Log RedGifs posts without a Reddit video ([ce762f7](https://github.com/DarkGooner/morphe-patches/commit/ce762f716d32d477199ea6d46519ab4425a0f6e5))
+
 ## [1.47.6](https://github.com/DarkGooner/morphe-patches/compare/v1.47.5...v1.47.6) (2026-10-09)
 
 ### 🐛 Bug Fixes
