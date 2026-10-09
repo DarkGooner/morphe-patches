@@ -1,3 +1,9 @@
+## [1.47.0](https://github.com/DarkGooner/morphe-patches/compare/v1.46.0...v1.47.0) (2026-10-09)
+
+### ✨ New Features
+
+* **Reddit:** Add `Enable RedGifs audio` patch ([8703c7d](https://github.com/DarkGooner/morphe-patches/commit/8703c7d8f12b1159cec64edf9b7059a7832b8366))
+
 ## [1.46.0](https://github.com/MorpheApp/morphe-patches/compare/v1.45.0...v1.46.0) (2026-10-06)
 
 ### 🐛 Bug Fixes
