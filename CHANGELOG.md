@@ -1,3 +1,9 @@
+## [1.47.6](https://github.com/DarkGooner/morphe-patches/compare/v1.47.5...v1.47.6) (2026-10-09)
+
+### 🐛 Bug Fixes
+
+* **Reddit - Enable RedGifs audio:** Use the sd video to prevent buffering pauses ([09d8436](https://github.com/DarkGooner/morphe-patches/commit/09d84361892f8e87edc3d0fb0edbcf09ea4fb938))
+
 ## [1.47.5](https://github.com/DarkGooner/morphe-patches/compare/v1.47.4...v1.47.5) (2026-10-09)
 
 ### 🐛 Bug Fixes
